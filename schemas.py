@@ -2,13 +2,18 @@ from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 from models import UserRole
 
-# Schema for incoming registration payload
+# Registration schema
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, description="Password must be at least 8 characters")
     role: UserRole = UserRole.USER
 
-# Schema for outgoing user data (NEVER returns hashed_password!)
+# Login schema
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+# Outgoing user profile schema (safe, no password hash)
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
@@ -17,3 +22,9 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# Outgoing JWT Bearer Token schema
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in_minutes: int
