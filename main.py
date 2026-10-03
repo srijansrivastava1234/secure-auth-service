@@ -7,7 +7,7 @@ import schemas
 import security
 from database import engine, get_db
 
-# Create database tables
+# Auto-create tables
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -16,6 +16,7 @@ app = FastAPI(
     description="Enterprise Authentication, Role-Based Access Control, and Audit Logging Service"
 )
 
+# 1. Public Health Check
 @app.get("/api/v1/health", tags=["Health"])
 def health_check():
     return {
@@ -25,6 +26,7 @@ def health_check():
         "database": "sqlite-connected"
     }
 
+# 2. Public Registration
 @app.post(
     "/api/v1/auth/register", 
     response_model=schemas.UserResponse, 
@@ -32,7 +34,6 @@ def health_check():
     tags=["Authentication"]
 )
 def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
-    """Registers a new user with bcrypt password hashing."""
     existing_user = db.query(models.User).filter(models.User.email == user_in.email).first()
     if existing_user:
         raise HTTPException(
@@ -49,22 +50,16 @@ def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-
     return new_user
 
+# 3. Public Login (Generates JWT)
 @app.post(
     "/api/v1/auth/login", 
     response_model=schemas.Token,
     tags=["Authentication"]
 )
 def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
-    """
-    Authenticates email and password, returning a signed JWT Bearer Token.
-    """
-    # 1. Fetch user by email
     user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
-    
-    # 2. Verify password hash using bcrypt
     if not user or not security.verify_password(user_credentials.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -72,7 +67,6 @@ def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 3. Create signed JWT access token (valid for 30 minutes)
     access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         data={"sub": user.email, "user_id": user.id, "role": user.role.value},
@@ -83,4 +77,31 @@ def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db
         "access_token": access_token,
         "token_type": "bearer",
         "expires_in_minutes": security.ACCESS_TOKEN_EXPIRE_MINUTES
+    }
+
+# 4. PROTECTED ENDPOINT (Requires Valid JWT)
+@app.get(
+    "/api/v1/users/me", 
+    response_model=schemas.UserResponse,
+    tags=["Users"]
+)
+def get_current_user_profile(current_user: models.User = Depends(security.get_current_user)):
+    """Fetches the authenticated user's profile from the JWT token."""
+    return current_user
+
+# 5. RBAC PROTECTED ENDPOINT (Admin Only)
+@app.get(
+    "/api/v1/admin/analytics", 
+    tags=["Admin"]
+)
+def get_admin_analytics(admin_user: models.User = Depends(security.require_role(models.UserRole.ADMIN))):
+    """Restricted endpoint accessible exclusively to users with 'admin' role."""
+    return {
+        "message": "Welcome to the Admin Secure Command Center",
+        "admin_email": admin_user.email,
+        "system_metrics": {
+            "auth_status": "nominal",
+            "active_sessions": 1,
+            "security_alerts": 0
+        }
     }
