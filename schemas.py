@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
+from typing import Optional, List
 from models import UserRole
 
 # Registration schema
@@ -13,7 +14,7 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-# Outgoing user profile schema (safe, no password hash)
+# Outgoing user profile schema
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
@@ -28,3 +29,14 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+
+# Outgoing Security Audit Log schema
+class AuditLogResponse(BaseModel):
+    id: int
+    event_type: str
+    email: str
+    ip_address: Optional[str] = None
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True

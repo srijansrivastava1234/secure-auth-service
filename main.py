@@ -1,19 +1,20 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
+from typing import List
 
 import models
 import schemas
 import security
 from database import engine, get_db
 
-# Auto-create tables
+# Auto-create all tables (Users and Audit Logs) in SQLite
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Secure Identity & RBAC Microservice",
     version="1.0.0",
-    description="Enterprise Authentication, Role-Based Access Control, and Audit Logging Service"
+    description="Enterprise Authentication, Role-Based Access Control, and Security Event Audit Logging"
 )
 
 # 1. Public Health Check
@@ -52,21 +53,42 @@ def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
-# 3. Public Login (Generates JWT)
+# 3. Public Login with Automated Security Audit Logging
 @app.post(
     "/api/v1/auth/login", 
     response_model=schemas.Token,
     tags=["Authentication"]
 )
-def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
+def login_user(user_credentials: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
     user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
+
+    # If user does not exist or password hash mismatch
     if not user or not security.verify_password(user_credentials.password, user.hashed_password):
+        failed_log = models.AuditLog(
+            event_type="LOGIN_FAILED",
+            email=user_credentials.email,
+            ip_address=client_ip
+        )
+        db.add(failed_log)
+        db.commit()
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Record Security Success in Audit Logs
+    success_log = models.AuditLog(
+        event_type="LOGIN_SUCCESS",
+        email=user.email,
+        ip_address=client_ip
+    )
+    db.add(success_log)
+    db.commit()
+
+    # Generate Signed JWT Access Token
     access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         data={"sub": user.email, "user_id": user.id, "role": user.role.value},
@@ -79,29 +101,29 @@ def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db
         "expires_in_minutes": security.ACCESS_TOKEN_EXPIRE_MINUTES
     }
 
-# 4. PROTECTED ENDPOINT (Requires Valid JWT)
+# 4. Protected User Profile
 @app.get(
     "/api/v1/users/me", 
     response_model=schemas.UserResponse,
     tags=["Users"]
 )
 def get_current_user_profile(current_user: models.User = Depends(security.get_current_user)):
-    """Fetches the authenticated user's profile from the JWT token."""
     return current_user
 
-# 5. RBAC PROTECTED ENDPOINT (Admin Only)
+# 5. Protected Admin/Auditor Security Logs Stream
 @app.get(
-    "/api/v1/admin/analytics", 
-    tags=["Admin"]
+    "/api/v1/admin/audit-logs", 
+    response_model=List[schemas.AuditLogResponse],
+    tags=["Admin & Audit"]
 )
-def get_admin_analytics(admin_user: models.User = Depends(security.require_role(models.UserRole.ADMIN))):
-    """Restricted endpoint accessible exclusively to users with 'admin' role."""
-    return {
-        "message": "Welcome to the Admin Secure Command Center",
-        "admin_email": admin_user.email,
-        "system_metrics": {
-            "auth_status": "nominal",
-            "active_sessions": 1,
-            "security_alerts": 0
-        }
-    }
+def get_security_audit_logs(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(security.require_role(models.UserRole.AUDITOR))
+):
+    """
+    Returns the real-time security event log stream.
+    Accessible exclusively to users with 'auditor' or 'admin' roles.
+    """
+    logs = db.query(models.AuditLog).order_by(models.AuditLog.timestamp.desc()).limit(limit).all()
+    return logs

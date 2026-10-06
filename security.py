@@ -14,9 +14,7 @@ SECRET_KEY = "SUPER_SECRET_SECURITY_KEY_CHANGE_IN_PRODUCTION_JWT_SECRET"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Tells FastAPI where clients obtain their token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(password: str) -> str:
@@ -32,16 +30,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
-    """
-    Decodes and validates the JWT Bearer token signature.
-    Injects the authenticated User database object into the endpoint.
-    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials or token expired.",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
@@ -56,15 +49,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 def require_role(required_role: models.UserRole):
-    """
-    Role-Based Access Control (RBAC) dependency factory.
-    Enforces minimum role permissions at the route level.
-    """
     def role_checker(current_user: models.User = Depends(get_current_user)):
-        if current_user.role != required_role:
+        if current_user.role != required_role and current_user.role != models.UserRole.ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied: Requires '{required_role.value}' privileges."
+                detail=f"Access denied: Requires '{required_role.value}' or 'admin' privileges."
             )
         return current_user
     return role_checker
