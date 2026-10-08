@@ -3,19 +3,31 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 from typing import List
 
+# Rate Limiting Imports
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 import models
 import schemas
 import security
 from database import engine, get_db
 
-# Auto-create all tables (Users and Audit Logs) in SQLite
+# Initialize database tables
 models.Base.metadata.create_all(bind=engine)
+
+# 1. Initialize Rate Limiter tracking by remote client IP
+limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
     title="Secure Identity & RBAC Microservice",
     version="1.0.0",
-    description="Enterprise Authentication, Role-Based Access Control, and Security Event Audit Logging"
+    description="Enterprise Authentication, Role-Based Access Control, Security Audit Logging, and Brute-Force Rate Limiting"
 )
+
+# 2. Attach rate limiter state and exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # 1. Public Health Check
 @app.get("/api/v1/health", tags=["Health"])
@@ -53,18 +65,23 @@ def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
-# 3. Public Login with Automated Security Audit Logging
+# 3. Rate-Limited Login Endpoint (Max 5 attempts / minute per IP)
 @app.post(
     "/api/v1/auth/login", 
     response_model=schemas.Token,
     tags=["Authentication"]
 )
-def login_user(user_credentials: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login_user(request: Request, user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
+    """
+    Authenticates credentials with Brute-Force Rate Limiting (5 requests/min per IP).
+    Logs all security events with client IP telemetry.
+    """
     client_ip = request.client.host if request.client else "unknown"
     user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
 
-    # If user does not exist or password hash mismatch
     if not user or not security.verify_password(user_credentials.password, user.hashed_password):
+        # Record FAILED login attempt in audit logs
         failed_log = models.AuditLog(
             event_type="LOGIN_FAILED",
             email=user_credentials.email,
@@ -79,7 +96,7 @@ def login_user(user_credentials: schemas.UserLogin, request: Request, db: Sessio
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Record Security Success in Audit Logs
+    # Record SUCCESSFUL login attempt
     success_log = models.AuditLog(
         event_type="LOGIN_SUCCESS",
         email=user.email,
@@ -88,7 +105,7 @@ def login_user(user_credentials: schemas.UserLogin, request: Request, db: Sessio
     db.add(success_log)
     db.commit()
 
-    # Generate Signed JWT Access Token
+    # Generate Signed JWT
     access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         data={"sub": user.email, "user_id": user.id, "role": user.role.value},
@@ -121,9 +138,5 @@ def get_security_audit_logs(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(security.require_role(models.UserRole.AUDITOR))
 ):
-    """
-    Returns the real-time security event log stream.
-    Accessible exclusively to users with 'auditor' or 'admin' roles.
-    """
     logs = db.query(models.AuditLog).order_by(models.AuditLog.timestamp.desc()).limit(limit).all()
     return logs
