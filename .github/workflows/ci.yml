@@ -38,6 +38,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Run Alembic Migrations
+      env:
+        DATABASE_URL: postgresql+psycopg2://auth_user:auth_secret@localhost:5432/auth_db
+      run: |
+        alembic upgrade head
+
     - name: Run Pytest against PostgreSQL
       env:
         DATABASE_URL: postgresql+psycopg2://auth_user:auth_secret@localhost:5432/auth_db
