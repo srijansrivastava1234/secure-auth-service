@@ -40,7 +40,7 @@ jobs:
 
     - name: Run Pytest against PostgreSQL
       env:
-        DATABASE_URL: postgresql://auth_user:auth_secret@localhost:5432/auth_db
+        DATABASE_URL: postgresql+psycopg2://auth_user:auth_secret@localhost:5432/auth_db
         SECRET_KEY: testsecretkey1234567890
         REDIS_URL: memory://
       run: |
