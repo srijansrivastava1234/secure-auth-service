@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Union
 from passlib.context import CryptContext
@@ -9,6 +10,7 @@ import jwt
 
 import models
 from database import get_db
+from blacklist import blacklist_client
 
 SECRET_KEY = os.getenv("SECRET_KEY", "SUPER_SECRET_SECURITY_KEY_CHANGE_IN_PRODUCTION_JWT_SECRET")
 ALGORITHM = "HS256"
@@ -29,8 +31,22 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
+    to_encode.update({
+        "exp": expire,
+        "jti": str(uuid.uuid4())
+    })
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> dict:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials or token expired.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
@@ -40,12 +56,25 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = decode_token(token)
         email: str = payload.get("sub")
-        if email is None:
+        jti: str = payload.get("jti")
+        if email is None or jti is None:
             raise credentials_exception
-    except jwt.PyJWTError:
-        raise credentials_exception
+
+        # Enforce stateful token blacklist check
+        if blacklist_client.is_blacklisted(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except RuntimeError as e:
+        # Fail-closed policy on blacklist infrastructure failure
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Security blacklist verification unreachable",
+        ) from e
 
     user = db.query(models.User).filter(models.User.email == email).first()
     if user is None:

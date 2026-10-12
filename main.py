@@ -1,4 +1,5 @@
 import os
+import time
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 
 from database import engine, get_db
 import models, schemas, auth
+from blacklist import blacklist_client
 
 # Configure Rate Limiter (Redis if provided, else in-memory fallback)
 redis_url = os.getenv("REDIS_URL", "memory://")
@@ -67,6 +69,20 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
         "token_type": "bearer",
         "expires_in_minutes": auth.ACCESS_TOKEN_EXPIRE_MINUTES
     }
+
+
+@app.post("/logout", status_code=status.HTTP_200_OK, tags=["Auth"])
+def logout(
+    token: str = Depends(auth.oauth2_scheme),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    payload = auth.decode_token(token)
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if jti and exp:
+        remaining_ttl = int(exp - time.time())
+        blacklist_client.revoke_token(jti, remaining_ttl)
+    return {"message": "Successfully logged out. Token invalidated."}
 
 
 @app.get("/users/me", response_model=schemas.UserResponse, tags=["Users"])
