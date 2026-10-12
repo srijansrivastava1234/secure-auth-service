@@ -1,63 +1,98 @@
-# 🛡️ Enterprise Secure Identity, RBAC & Security Audit Microservice
+# Secure Auth Service
+[![Continuous Integration](https://github.com/srijansrivastava1234/secure-auth-service/actions/workflows/ci.yml/badge.svg)](https://github.com/srijansrivastava1234/secure-auth-service/actions/workflows/ci.yml)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+![PostgreSQL 15](https://img.shields.io/badge/PostgreSQL-15-336791.svg)
+![Redis 7](https://img.shields.io/badge/Redis-7-DC382D.svg)
+![Alembic](https://img.shields.io/badge/Alembic-Migrations-orange.svg)
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688.svg?style=flat&logo=FastAPI&logoColor=white)](https://fastapi.tiangolo.com)
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
-A production-ready, stateless authentication and authorization REST microservice engineered with **FastAPI**, **SQLAlchemy ORM**, **Bcrypt**, and **PyJWT**. Features granular Role-Based Access Control (RBAC), tamper-evident security audit trails with IP telemetry, and automated unit testing suites.
+A production-hardened authentication and authorization microservice engineered with **FastAPI**, **PostgreSQL 15**, **Redis 7**, **Alembic**, and **PyJWT**. Features granular Role-Based Access Control (RBAC), distributed rate-limiting, fail-closed stateful JWT token revocation on logout, and automated GitHub Actions CI executing integration tests against live PostgreSQL.
 
 ---
 
-## 🏗️ Architecture & Data Flow
+## 🏗️ Architecture & Component Topology
 
 ```text
-[ Client / Web Frontend ]
-          │
-          ▼  (HTTP POST / GET + Bearer Token)
-┌─────────────────────────────────────────────────────────────┐
-│                      FastAPI Routing Engine                 │
-│                                                             │
-│  1. Pydantic Validation (Email formatting & length rules)   │
-│  2. Cryptographic Layer (12-round salted Bcrypt + HS256)    │
-│  3. RBAC Middleware (Enforces ADMIN / AUDITOR privileges)   │
-│  4. Audit Telemetry (Logs IP & event timestamps)            │
-│  5. SQLAlchemy Parameterized ORM (Zero SQLi risk)           │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-            ┌────────────────────────────────────┐
-            │   Relational Store (SQLite/PG)     │
-            │   ├── Table: users                 │
-            │   └── Table: audit_logs            │
-            └────────────────────────────────────┘
+                           [ Client / Frontends ]
+                                     │
+                                     ▼  (HTTP + Bearer JWT)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            FastAPI API Gateway                              │
+│                                                                             │
+│  1. Pydantic v2 Schema Validation                                           │
+│  2. Distributed Rate Limiting (SlowAPI with Redis Backend, 5/min on /login) │
+│  3. Bcrypt (Salted password hashing, strictly pinned compatibility)         │
+│  4. JWT Auth Engine (HS256 with unique jti claims)                          │
+│  5. Stateful Revocation Guard (Redis TTL Blacklist with Fail-Closed policy) │
+│  6. Granular RBAC Boundary Middleware (ADMIN / USER roles)                  │
+└───────────────────────┬─────────────────────────────┬───────────────────────┘
+                        │                             │
+                        ▼                             ▼
+       ┌────────────────────────────────┐     ┌────────────────────────────────┐
+       │     PostgreSQL 15 Database     │     │       Redis 7 Cache Store      │
+       │  ├── Alembic Schema Migration  │     │  ├── SlowAPI Rate Limits       │
+       │  ├── Table: users              │     │  └── Blacklisted jti Tokens    │
+       │  └── Table: audit_logs         │     │      (Dynamic TTL Expiration)  │
+       └────────────────────────────────┘     └────────────────────────────────┘
 ```
+
+---
 
 ## 🚀 API Endpoints
 
-| Method | Endpoint                   | Access Level        | Description                                              |
-| :----- | :------------------------- | :------------------ | :------------------------------------------------------- |
-| `GET`  | `/api/v1/health`           | **Public**          | Microservice health and database status                  |
-| `POST` | `/api/v1/auth/register`    | **Public**          | User registration with duplicate conflict handling (409) |
-| `POST` | `/api/v1/auth/login`       | **Public**          | Verifies credentials, logs IP, and issues Bearer JWT     |
-| `GET`  | `/api/v1/users/me`         | **Authenticated**   | Fetches user profile from validated JWT signature        |
-| `GET`  | `/api/v1/admin/audit-logs` | **Auditor / Admin** | Accesses real-time security event audit stream           |
+| Method | Endpoint            | Access Level      | Description                                                             |
+| :----- | :------------------ | :---------------- | :---------------------------------------------------------------------- |
+| `GET`  | `/healthz`          | **Public**        | System liveness and microservice health probe                           |
+| `POST` | `/register`         | **Public**        | User registration with hashed credentials and role assignment           |
+| `POST` | `/login`            | **Rate Limited**  | Authenticates credentials via OAuth2 form; issues JWT with unique `jti` |
+| `POST` | `/logout`           | **Authenticated** | Revokes JWT by storing `jti` in Redis blacklist with remaining TTL      |
+| `GET`  | `/users/me`         | **Authenticated** | Fetches profile; verifies token signature and blacklist status          |
+| `GET`  | `/admin/dashboard`  | **Admin Only**    | Accesses admin controls; rejects unauthorized roles with 403 Forbidden  |
 
 ---
 
-## 🛠️ Quickstart Installation
+## 🐳 How to Run (Docker Compose)
+
+Spin up the entire stack (FastAPI API with live reload, PostgreSQL 15, and Redis 7) with a single command:
 
 ```bash
-# 1. Clone the repository
+docker compose up --build
+```
+
+The container pipeline automatically:
+1. Awaits PostgreSQL container healthcheck (`pg_isready`).
+2. Runs Alembic database schema migrations (`alembic upgrade head`).
+3. Launches the API server on `http://localhost:8000`.
+4. Exposes interactive OpenAPI documentation at `http://localhost:8000/docs`.
+
+---
+
+## 🧪 Local Development & Testing
+
+```bash
+# 1. Clone repository
 git clone https://github.com/srijansrivastava1234/secure-auth-service.git
 cd secure-auth-service
 
 # 2. Set up virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: .\venv\Scripts\Activate.ps1
+.\venv\Scripts\Activate.ps1  # On Linux/macOS: source venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Start development server
-uvicorn main:app --reload
+# 4. Run database migrations
+alembic upgrade head
+
+# 5. Run the complete test suite
+pytest -v
 ```
+
+---
+
+## 🔄 CI/CD Pipeline
+
+Every push and pull request to `main` triggers automated GitHub Actions CI:
+- Initializes a live PostgreSQL 15 service container.
+- Sets up Python 3.11 and installs all pinned dependencies.
+- Executes `alembic upgrade head` to validate migration DDL on live Postgres.
+- Runs the complete `pytest` test suite against PostgreSQL and Redis fallback storage.
