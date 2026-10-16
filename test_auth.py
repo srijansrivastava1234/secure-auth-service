@@ -62,6 +62,7 @@ def test_login_and_token_generation():
     assert response.status_code == 200
     token_data = response.json()
     assert "access_token" in token_data
+    assert "refresh_token" in token_data
     assert token_data["token_type"] == "bearer"
 
 
@@ -179,3 +180,74 @@ def test_revoked_token_cannot_access_admin():
     )
     assert admin_resp.status_code == 401
     assert admin_resp.json()["detail"] == "Token has been revoked"
+
+
+def test_refresh_token_rotation_success():
+    # Register and login user
+    client.post(
+        "/register",
+        json={"email": "rotateuser@example.com", "password": "ValidPassword123", "role": "user"}
+    )
+    login_resp = client.post(
+        "/login",
+        data={"username": "rotateuser@example.com", "password": "ValidPassword123"}
+    )
+    assert login_resp.status_code == 200
+    initial_data = login_resp.json()
+    r1_token = initial_data["refresh_token"]
+
+    # Rotate refresh token
+    refresh_resp = client.post("/refresh", json={"refresh_token": r1_token})
+    assert refresh_resp.status_code == 200
+    rotated_data = refresh_resp.json()
+    assert "access_token" in rotated_data
+    assert "refresh_token" in rotated_data
+    r2_token = rotated_data["refresh_token"]
+    assert r2_token != r1_token
+
+    # Verify new access token works for authenticated routes
+    new_access_token = rotated_data["access_token"]
+    profile_resp = client.get("/users/me", headers={"Authorization": f"Bearer {new_access_token}"})
+    assert profile_resp.status_code == 200
+    assert profile_resp.json()["email"] == "rotateuser@example.com"
+
+    # Verify rotated token can be rotated again (r2 -> r3)
+    second_refresh = client.post("/refresh", json={"refresh_token": r2_token})
+    assert second_refresh.status_code == 200
+    assert "refresh_token" in second_refresh.json()
+
+
+def test_refresh_token_reuse_triggers_breach_containment():
+    # Register and login user
+    client.post(
+        "/register",
+        json={"email": "breachuser@example.com", "password": "ValidPassword123", "role": "user"}
+    )
+    login_resp = client.post(
+        "/login",
+        data={"username": "breachuser@example.com", "password": "ValidPassword123"}
+    )
+    assert login_resp.status_code == 200
+    r1_token = login_resp.json()["refresh_token"]
+
+    # Legitimate client rotates r1 -> gets r2
+    rotate_resp = client.post("/refresh", json={"refresh_token": r1_token})
+    assert rotate_resp.status_code == 200
+    r2_token = rotate_resp.json()["refresh_token"]
+
+    # Adversary attempts to replay the already-revoked r1 token
+    replay_resp = client.post("/refresh", json={"refresh_token": r1_token})
+    assert replay_resp.status_code == 401
+    assert "Token reuse detected" in replay_resp.json()["detail"]
+
+    # Breach containment check: r2 MUST have been invalidated as well!
+    subsequent_resp = client.post("/refresh", json={"refresh_token": r2_token})
+    assert subsequent_resp.status_code == 401
+    assert "Token reuse detected" in subsequent_resp.json()["detail"]
+
+
+def test_refresh_token_invalid_token():
+    response = client.post("/refresh", json={"refresh_token": "nonexistent_fake_token_value_12345"})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid refresh token"
+

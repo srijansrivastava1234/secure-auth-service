@@ -1,7 +1,9 @@
 import os
 import uuid
+import secrets
+import hashlib
 from datetime import datetime, timedelta
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -14,7 +16,8 @@ from blacklist import blacklist_client
 
 SECRET_KEY = os.getenv("SECRET_KEY", "SUPER_SECRET_SECURITY_KEY_CHANGE_IN_PRODUCTION_JWT_SECRET")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -28,12 +31,29 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
+def hash_token(token: str) -> str:
+    """Computes SHA-256 digest of an opaque token for secure database storage."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def generate_opaque_refresh_token() -> Tuple[str, str, datetime]:
+    """
+    Generates a cryptographically secure 64-byte opaque token string,
+    its SHA-256 hash, and its UTC expiration timestamp.
+    """
+    raw_token = secrets.token_urlsafe(64)
+    token_hash = hash_token(raw_token)
+    expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    return raw_token, token_hash, expires_at
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({
         "exp": expire,
-        "jti": str(uuid.uuid4())
+        "jti": str(uuid.uuid4()),
+        "type": "access"
     })
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

@@ -6,9 +6,12 @@ from security import (
     get_current_user,
     require_role,
     oauth2_scheme,
+    hash_token,
+    generate_opaque_refresh_token,
     SECRET_KEY,
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from blacklist import blacklist_client
 
@@ -21,7 +24,10 @@ __all__ = [
     "require_role",
     "oauth2_scheme",
     "blacklist_client",
+    "hash_token",
+    "generate_opaque_refresh_token",
     "SECRET_KEY",
     "ALGORITHM",
     "ACCESS_TOKEN_EXPIRE_MINUTES",
+    "REFRESH_TOKEN_EXPIRE_DAYS",
 ]

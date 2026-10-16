@@ -21,9 +21,10 @@ A production-hardened authentication and authorization microservice engineered w
 │  1. Pydantic v2 Schema Validation                                           │
 │  2. Distributed Rate Limiting (SlowAPI with Redis Backend, 5/min on /login) │
 │  3. Bcrypt (Salted password hashing, strictly pinned compatibility)         │
-│  4. JWT Auth Engine (HS256 with unique jti claims)                          │
-│  5. Stateful Revocation Guard (Redis TTL Blacklist with Fail-Closed policy) │
-│  6. Granular RBAC Boundary Middleware (ADMIN / USER roles)                  │
+│  4. JWT Auth Engine (HS256 with unique jti claims & 15m expiration)         │
+│  5. Refresh Token Rotation (Opaque 64-byte tokens, SHA-256 hash persistence)│
+│  6. Stateful Revocation Guard (Redis TTL Blacklist with Fail-Closed policy) │
+│  7. Granular RBAC Boundary Middleware (ADMIN / USER roles)                  │
 └───────────────────────┬─────────────────────────────┬───────────────────────┘
                         │                             │
                         ▼                             ▼
@@ -31,7 +32,8 @@ A production-hardened authentication and authorization microservice engineered w
        │     PostgreSQL 15 Database     │     │       Redis 7 Cache Store      │
        │  ├── Alembic Schema Migration  │     │  ├── SlowAPI Rate Limits       │
        │  ├── Table: users              │     │  └── Blacklisted jti Tokens    │
-       │  └── Table: audit_logs         │     │      (Dynamic TTL Expiration)  │
+       │  ├── Table: refresh_tokens     │     │      (Dynamic TTL Expiration)  │
+       │  └── Table: audit_logs         │     │                                │
        └────────────────────────────────┘     └────────────────────────────────┘
 ```
 
@@ -43,7 +45,8 @@ A production-hardened authentication and authorization microservice engineered w
 | :----- | :------------------ | :---------------- | :---------------------------------------------------------------------- |
 | `GET`  | `/healthz`          | **Public**        | System liveness and microservice health probe                           |
 | `POST` | `/register`         | **Public**        | User registration with hashed credentials and role assignment           |
-| `POST` | `/login`            | **Rate Limited**  | Authenticates credentials via OAuth2 form; issues JWT with unique `jti` |
+| `POST` | `/login`            | **Rate Limited**  | Authenticates credentials via OAuth2 form; issues access & refresh pair |
+| `POST` | `/refresh`          | **Rate Limited**  | Rotates opaque refresh token; contains automatic breach detection (60/m)|
 | `POST` | `/logout`           | **Authenticated** | Revokes JWT by storing `jti` in Redis blacklist with remaining TTL      |
 | `GET`  | `/users/me`         | **Authenticated** | Fetches profile; verifies token signature and blacklist status          |
 | `GET`  | `/admin/dashboard`  | **Admin Only**    | Accesses admin controls; rejects unauthorized roles with 403 Forbidden  |

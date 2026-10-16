@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -54,8 +55,16 @@ def register(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
 @app.post("/login", response_model=schemas.Token, tags=["Auth"])
 @limiter.limit("5/minute")
 def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    client_ip = get_remote_address(request)
     user = db.query(models.User).filter(models.User.email == form_data.username).first()
     if not user or not auth.verify_password(form_data.password, user.hashed_password):
+        log = models.AuditLog(
+            event_type="LOGIN_FAILED",
+            email=form_data.username,
+            ip_address=client_ip
+        )
+        db.add(log)
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -64,8 +73,107 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
 
     role_str = user.role.value if hasattr(user.role, "value") else str(user.role)
     access_token = auth.create_access_token(data={"sub": user.email, "role": role_str})
+
+    raw_refresh, token_hash, expires_at = auth.generate_opaque_refresh_token()
+    db_refresh = models.RefreshToken(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=expires_at
+    )
+    db.add(db_refresh)
+
+    log = models.AuditLog(
+        event_type="LOGIN_SUCCESS",
+        email=user.email,
+        ip_address=client_ip
+    )
+    db.add(log)
+    db.commit()
+
     return {
         "access_token": access_token,
+        "refresh_token": raw_refresh,
+        "token_type": "bearer",
+        "expires_in_minutes": auth.ACCESS_TOKEN_EXPIRE_MINUTES
+    }
+
+
+@app.post("/refresh", response_model=schemas.Token, tags=["Auth"])
+@limiter.limit("60/minute")
+def refresh_access_token(request: Request, payload: schemas.RefreshTokenRequest, db: Session = Depends(get_db)):
+    client_ip = get_remote_address(request)
+    raw_token = payload.refresh_token
+    token_hash = auth.hash_token(raw_token)
+
+    query = db.query(models.RefreshToken).filter(models.RefreshToken.token_hash == token_hash)
+    # Apply row-level locking for concurrency protection when running on PostgreSQL
+    if db.bind and db.bind.dialect.name != "sqlite":
+        query = query.with_for_update()
+    db_token = query.first()
+
+    # Case A: Unknown token hash
+    if not db_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Case B: Token Reuse Detected (Token was already revoked!)
+    if db_token.revoked:
+        # Breach containment: Invalidate ALL active refresh tokens for this user
+        db.query(models.RefreshToken).filter(
+            models.RefreshToken.user_id == db_token.user_id,
+            models.RefreshToken.revoked == False
+        ).update({"revoked": True})
+
+        log = models.AuditLog(
+            event_type="TOKEN_REUSE_BREACH_DETECTED",
+            email=db_token.user.email,
+            ip_address=client_ip
+        )
+        db.add(log)
+        db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Security alert: Token reuse detected. All sessions invalidated.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Case C: Expired refresh token
+    now_utc = datetime.utcnow()
+    if db_token.expires_at < now_utc:
+        db_token.revoked = True
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token expired. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Case D: Valid token -> ROTATE
+    db_token.revoked = True
+
+    user = db_token.user
+    role_str = user.role.value if hasattr(user.role, "value") else str(user.role)
+    new_access_token = auth.create_access_token(data={"sub": user.email, "role": role_str})
+    new_raw_refresh, new_token_hash, new_expires_at = auth.generate_opaque_refresh_token()
+
+    new_db_token = models.RefreshToken(
+        user_id=user.id,
+        token_hash=new_token_hash,
+        expires_at=new_expires_at
+    )
+    db.add(new_db_token)
+
+    log = models.AuditLog(event_type="TOKEN_ROTATED", email=user.email, ip_address=client_ip)
+    db.add(log)
+    db.commit()
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_raw_refresh,
         "token_type": "bearer",
         "expires_in_minutes": auth.ACCESS_TOKEN_EXPIRE_MINUTES
     }

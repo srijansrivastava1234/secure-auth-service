@@ -27,8 +27,13 @@ class UserResponse(BaseModel):
 # Outgoing JWT Bearer Token schema
 class Token(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 # Outgoing Security Audit Log schema
 class AuditLogResponse(BaseModel):
